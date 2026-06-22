@@ -1,3 +1,6 @@
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 using CodeReviewAgent.Core.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -27,11 +30,82 @@ public sealed class EmbeddingService : IEmbeddingService
     private string Endpoint => string.IsNullOrWhiteSpace(_embedding.Endpoint) ? _llm.Endpoint : _embedding.Endpoint;
     private string ApiKey => string.IsNullOrWhiteSpace(_embedding.ApiKey) ? _llm.ApiKey : _embedding.ApiKey;
 
-    public Task<IReadOnlyList<float[]>> EmbedAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
+    public async Task<IReadOnlyList<float[]>> EmbedAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
     {
-        // TODO(组员B): 实现真实向量化。
-        // 提示：POST {Endpoint}/embeddings，Body { model = _embedding.Model, input = texts }，
-        //       Header Authorization: Bearer {ApiKey}，解析 data[].embedding 返回。
-        throw new NotImplementedException("EmbeddingService.EmbedAsync 待组员 B 实现。");
+        ArgumentNullException.ThrowIfNull(texts);
+        if (texts.Count == 0)
+        {
+            return Array.Empty<float[]>();
+        }
+        if (texts.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("待向量化文本不能包含空项。", nameof(texts));
+        }
+        if (string.IsNullOrWhiteSpace(ApiKey))
+        {
+            throw new InvalidOperationException("未配置 Embedding ApiKey。 ");
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{Endpoint.TrimEnd('/')}/embeddings");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ApiKey);
+        request.Content = JsonContent.Create(new EmbeddingRequest(_embedding.Model, texts));
+
+        var client = _httpClientFactory.CreateClient(nameof(EmbeddingService));
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Embedding 请求失败：HTTP {(int)response.StatusCode} ({response.ReasonPhrase})。 ");
+        }
+
+        EmbeddingResponse payload;
+        try
+        {
+            payload = await response.Content.ReadFromJsonAsync<EmbeddingResponse>(cancellationToken: ct)
+                ?? throw new InvalidDataException("Embedding 响应为空。 ");
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            throw new InvalidDataException("Embedding 响应不是有效 JSON。 ", ex);
+        }
+
+        if (payload.Data is null || payload.Data.Count != texts.Count)
+        {
+            throw new InvalidDataException("Embedding 响应数量与输入数量不一致。 ");
+        }
+
+        var ordered = new float[texts.Count][];
+        foreach (var item in payload.Data)
+        {
+            if (item.Index < 0 || item.Index >= texts.Count || ordered[item.Index] is not null)
+            {
+                throw new InvalidDataException("Embedding 响应包含无效或重复的 index。 ");
+            }
+            if (item.Embedding is null || item.Embedding.Length == 0)
+            {
+                throw new InvalidDataException("Embedding 响应包含空向量。 ");
+            }
+            ordered[item.Index] = item.Embedding;
+        }
+
+        var dimension = ordered[0].Length;
+        if (ordered.Any(vector => vector is null || vector.Length != dimension))
+        {
+            throw new InvalidDataException("Embedding 响应向量维度不一致。 ");
+        }
+        return ordered;
     }
+
+    private sealed record EmbeddingRequest(
+        [property: JsonPropertyName("model")] string Model,
+        [property: JsonPropertyName("input")] IReadOnlyList<string> Input);
+
+    private sealed record EmbeddingResponse(
+        [property: JsonPropertyName("data")] IReadOnlyList<EmbeddingItem>? Data);
+
+    private sealed record EmbeddingItem(
+        [property: JsonPropertyName("index")] int Index,
+        [property: JsonPropertyName("embedding")] float[]? Embedding);
 }

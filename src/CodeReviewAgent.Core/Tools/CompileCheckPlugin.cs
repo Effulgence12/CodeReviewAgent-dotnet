@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.SemanticKernel;
 
 namespace CodeReviewAgent.Core.Tools;
@@ -10,11 +12,11 @@ namespace CodeReviewAgent.Core.Tools;
 /// </summary>
 public sealed class CompileCheckPlugin
 {
-    private readonly string _root;
+    private readonly SandboxedPathResolver _paths;
 
     public CompileCheckPlugin(string root)
     {
-        _root = Path.GetFullPath(root);
+        _paths = new SandboxedPathResolver(root);
     }
 
     [KernelFunction("compile_check")]
@@ -22,8 +24,48 @@ public sealed class CompileCheckPlugin
     public string CompileCheck(
         [Description("相对审查根目录的 .cs 文件路径")] string path)
     {
-        // TODO(组员B): 读取文件 → CSharpCompilation.Create(...).Emit(内存流) → 汇总 GetDiagnostics() 返回。
-        //             需要引用基础程序集（如 System.Private.CoreLib、System.Runtime）作为 MetadataReference。
-        throw new NotImplementedException("CompileCheckPlugin.CompileCheck 待组员 B 实现。");
+        var fullPath = _paths.ResolveExistingCSharpFile(path);
+        var source = File.ReadAllText(fullPath);
+        var tree = CSharpSyntaxTree.ParseText(source, path: _paths.ToRelativeDisplayPath(fullPath));
+        var compilation = CSharpCompilation.Create(
+            $"CodeReviewCheck_{Guid.NewGuid():N}",
+            new[] { tree },
+            GetTrustedPlatformReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        using var assembly = new MemoryStream();
+        var result = compilation.Emit(assembly);
+        var diagnostics = result.Diagnostics
+            .Where(diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
+            .OrderBy(diagnostic => diagnostic.Location.GetLineSpan().StartLinePosition.Line)
+            .ThenBy(diagnostic => diagnostic.Location.GetLineSpan().StartLinePosition.Character)
+            .ThenBy(diagnostic => diagnostic.Id, StringComparer.Ordinal)
+            .Select(FormatDiagnostic)
+            .ToArray();
+
+        var status = result.Success ? "Success" : "Failed";
+        return diagnostics.Length == 0
+            ? status
+            : $"{status}{Environment.NewLine}{string.Join(Environment.NewLine, diagnostics)}";
+    }
+
+    private static IReadOnlyList<MetadataReference> GetTrustedPlatformReferences()
+    {
+        var trustedAssemblies = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string;
+        if (string.IsNullOrWhiteSpace(trustedAssemblies))
+        {
+            throw new InvalidOperationException("当前运行时未提供可信平台程序集列表。 ");
+        }
+
+        return trustedAssemblies.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(path => MetadataReference.CreateFromFile(path))
+            .ToArray();
+    }
+
+    private static string FormatDiagnostic(Diagnostic diagnostic)
+    {
+        var start = diagnostic.Location.GetLineSpan().StartLinePosition;
+        return $"{diagnostic.Severity} {diagnostic.Id} | {start.Line + 1}:{start.Character + 1} | {diagnostic.GetMessage()}";
     }
 }

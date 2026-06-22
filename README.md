@@ -4,7 +4,7 @@
 
 核心是一段手写的 ReAct 推理循环（Thought → Action → Observation），由真实大模型驱动决策；以一个对话式编排 Agent 为唯一入口，按需触发多 Agent 深度审查（评审 → 汇总 → 修复验证三阶段）。对外提供 Web 聊天界面，并通过 MCP 服务端把能力暴露给其它 AI 客户端。
 
-> 本仓库为团队协作骨架：核心引擎（组员 A）已落地；工具与 RAG（组员 B）、Web/MCP/测试/文档（组员 C）以 TODO 占位，按 `docs/开发计划.md` 分工填充。
+> 当前核心引擎（组员 A）以及工具、Roslyn 分析、修复验证和 RAG（组员 B）已落地；Web 交互、完整 MCP 验证及课程文档仍按 `docs/开发计划.md` 继续开发。
 
 ## 解决方案结构
 
@@ -49,4 +49,3 @@ dotnet run --project src/CodeReviewAgent.Web   # 启动 Web 聊天界面
 dotnet test                                # 运行单元测试
 ```
 
-> 注：当前为骨架，工具与 RAG（组员 B）落地前，端到端审查会在调用工具处抛出 NotImplementedException，属于预期内现象。

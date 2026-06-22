@@ -9,12 +9,12 @@ namespace CodeReviewAgent.Core.Tools;
 /// </summary>
 public sealed class FileSystemPlugin
 {
-    private readonly string _root;
+    private readonly SandboxedPathResolver _paths;
 
     /// <param name="root">审查根目录；本插件所有访问都限定在此目录内。</param>
     public FileSystemPlugin(string root)
     {
-        _root = Path.GetFullPath(root);
+        _paths = new SandboxedPathResolver(root);
     }
 
     [KernelFunction("list_files")]
@@ -23,9 +23,33 @@ public sealed class FileSystemPlugin
         [Description("相对审查根目录的子目录，留空表示根目录")] string subDirectory = "",
         [Description("文件名通配符，如 *.cs；留空表示 *.cs")] string pattern = "*.cs")
     {
-        // TODO(组员B): 递归枚举 _root/subDirectory 下匹配 pattern 的文件，返回相对路径列表；
-        //             注意校验 subDirectory 不越出 _root（防目录穿越）。
-        throw new NotImplementedException("FileSystemPlugin.ListFiles 待组员 B 实现。");
+        pattern = string.IsNullOrWhiteSpace(pattern) ? "*.cs" : pattern.Trim();
+        if (Path.GetFileName(pattern) != pattern ||
+            pattern.Contains("..", StringComparison.Ordinal) ||
+            pattern.IndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, ':' }) >= 0)
+        {
+            throw new ArgumentException("pattern 只能是简单文件名通配符，不能包含目录。", nameof(pattern));
+        }
+
+        var directory = _paths.ResolveExistingDirectory(subDirectory);
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = false,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+            MatchCasing = MatchCasing.CaseInsensitive,
+        };
+
+        var files = Directory.EnumerateFiles(directory, pattern, options)
+            .Where(path => string.Equals(Path.GetExtension(path), ".cs", StringComparison.OrdinalIgnoreCase))
+            .Select(_paths.ToRelativeDisplayPath)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+
+        return files.Length == 0
+            ? "未找到匹配的 C# 源文件。"
+            : string.Join(Environment.NewLine, files);
     }
 
     [KernelFunction("read_file")]
@@ -33,7 +57,16 @@ public sealed class FileSystemPlugin
     public string ReadFile(
         [Description("相对审查根目录的文件路径，如 Services/Order.cs")] string path)
     {
-        // TODO(组员B): 读取 _root/path 文件，逐行加行号返回；校验路径不越出 _root。
-        throw new NotImplementedException("FileSystemPlugin.ReadFile 待组员 B 实现。");
+        var fullPath = _paths.ResolveExistingCSharpFile(path);
+        var content = File.ReadAllText(fullPath);
+        if (content.IndexOf('\0') >= 0)
+        {
+            throw new InvalidDataException("源文件包含二进制内容，无法作为文本读取。 ");
+        }
+
+        var lines = content.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
+        return string.Join(Environment.NewLine, lines.Select((line, index) => $"{index + 1}: {line}"));
     }
 }

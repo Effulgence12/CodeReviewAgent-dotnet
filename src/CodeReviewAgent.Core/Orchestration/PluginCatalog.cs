@@ -1,5 +1,7 @@
+using CodeReviewAgent.Core.Configuration;
 using CodeReviewAgent.Core.Rag;
 using CodeReviewAgent.Core.Tools;
+using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel;
 
 namespace CodeReviewAgent.Core.Orchestration;
@@ -19,10 +21,12 @@ namespace CodeReviewAgent.Core.Orchestration;
 public sealed class PluginCatalog
 {
     private readonly IKnowledgeBase _knowledgeBase;
+    private readonly int _ragTopK;
 
-    public PluginCatalog(IKnowledgeBase knowledgeBase)
+    public PluginCatalog(IKnowledgeBase knowledgeBase, IOptions<AgentConfig> config)
     {
         _knowledgeBase = knowledgeBase;
+        _ragTopK = config.Value.Rag.TopK;
     }
 
     /// <summary>评审专家用的只读工具集（沙箱绑定到审查根目录）。</summary>
@@ -30,7 +34,7 @@ public sealed class PluginCatalog
     {
         KernelPluginFactory.CreateFromObject(new FileSystemPlugin(root), "files"),
         KernelPluginFactory.CreateFromObject(new RoslynAnalysisPlugin(root), "roslyn"),
-        KernelPluginFactory.CreateFromObject(new CodingStandardsPlugin(_knowledgeBase), "standards"),
+        KernelPluginFactory.CreateFromObject(new CodingStandardsPlugin(_knowledgeBase, _ragTopK), "standards"),
     };
 
     /// <summary>修复 Agent 用的工具集：读 + 改 + 验证。</summary>
@@ -46,7 +50,7 @@ public sealed class PluginCatalog
     {
         KernelPluginFactory.CreateFromObject(new FileSystemPlugin(root), "files"),
         KernelPluginFactory.CreateFromObject(new RoslynAnalysisPlugin(root), "roslyn"),
-        KernelPluginFactory.CreateFromObject(new CodingStandardsPlugin(_knowledgeBase), "standards"),
+        KernelPluginFactory.CreateFromObject(new CodingStandardsPlugin(_knowledgeBase, _ragTopK), "standards"),
         KernelPluginFactory.CreateFromObject(new FixPlugin(root), "fix"),
         KernelPluginFactory.CreateFromObject(new CompileCheckPlugin(root), "compile"),
     };
