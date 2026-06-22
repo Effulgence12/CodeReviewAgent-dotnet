@@ -2,7 +2,7 @@
   "_说明": "复制本文件为同目录下的 appsettings.Local.json，填入你的 Key。该文件已被 .gitignore，不会提交。Endpoint/ChatModel 可选，留空则用 appsettings.json 的默认值。",
   "Llm": {
     "ApiKey": "在此填入你的key",
-    "ChatModel": "glm-5.1",
+    "ChatModel": "填入模型名(可选: qwen3.7-max glm-5.2 qwen3.7-plus)",
     "Endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1"
   }
 }
