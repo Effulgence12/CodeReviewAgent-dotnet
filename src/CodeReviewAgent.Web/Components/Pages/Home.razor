@@ -1,0 +1,32 @@
+@page "/"
+@rendermode InteractiveServer
+@using CodeReviewAgent.Core.Llm
+@inject KernelFactory KernelFactory
+
+<PageTitle>代码审查 Agent</PageTitle>
+
+<h1>代码审查 Agent</h1>
+
+@* 缺 Key 时显式提示（真实状态，绝不伪造）。 *@
+@if (!KernelFactory.Llm.IsConfigured)
+{
+    <p style="color:#a07070">
+        未检测到 LLM ApiKey。请在 Web 项目目录下复制 appsettings.Local.json.example 为
+        appsettings.Local.json 并填入 Llm:ApiKey，或设置环境变量 Llm__ApiKey 后重启。
+    </p>
+}
+else
+{
+    <p>当前模型：@KernelFactory.Llm.ChatModel</p>
+}
+
+@*
+    TODO(组员C): 实现聊天式交互界面。建议：
+    1. 注入 ConversationalAgentFactory，按会话 Create 一个对话 Agent（传入审查根目录与一个 IAgentObserver 适配器）。
+    2. 实现 IAgentObserver 适配器：把 OnStep/OnThought/OnAction/OnObservation/OnFinalAnswer 事件
+       通过 InvokeAsync(StateHasChanged) 实时渲染到「推理轨迹」面板。
+    3. 多轮对话：每次用户输入调用 agent.RunAsync(userMessage)，记忆在多轮间自动累积。
+    4. 代码提交入口：用 InputFile 上传 .cs 文件，或填写服务器目录路径作为审查根目录。
+    5. 回答用 Markdig 渲染为 Markdown。
+*@
+<p><em>聊天界面待组员 C 实现（见本文件 TODO 注释）。</em></p>

@@ -1,0 +1,52 @@
+# CodeReviewAgent · 基于 .NET 的代码审查 AI Agent
+
+.NET 程序设计课程期末项目 —— 一个能够自主推理、规划并调用工具完成 C#/.NET 代码审查的 AI Agent。
+
+核心是一段手写的 ReAct 推理循环（Thought → Action → Observation），由真实大模型驱动决策；以一个对话式编排 Agent 为唯一入口，按需触发多 Agent 深度审查（评审 → 汇总 → 修复验证三阶段）。对外提供 Web 聊天界面，并通过 MCP 服务端把能力暴露给其它 AI 客户端。
+
+> 本仓库为团队协作骨架：核心引擎（组员 A）已落地；工具与 RAG（组员 B）、Web/MCP/测试/文档（组员 C）以 TODO 占位，按 `docs/开发计划.md` 分工填充。
+
+## 解决方案结构
+
+```
+CodeReviewAgent-dotnet/
+├─ src/
+│  ├─ CodeReviewAgent.Core/   核心类库：ReAct 循环、记忆、工具、RAG、编排（不可单独运行）
+│  ├─ CodeReviewAgent.Web/    Blazor 聊天界面（唯一交互前端）
+│  └─ CodeReviewAgent.Mcp/    MCP stdio 服务端（对外暴露能力）
+├─ tests/CodeReviewAgent.Tests/  xUnit 单元测试
+├─ knowledge/                 RAG 知识库语料（编码规范）
+├─ samples/                   含缺陷的示例代码（演示/测试）
+├─ docs/                      开发计划、架构文档、反思报告
+└─ README.md
+```
+
+依赖方向单一：`Web` 与 `Mcp` 均只依赖 `Core`，彼此不互调。
+
+## 环境要求
+
+- .NET SDK 8.0+（项目目标 `net8.0`）
+- 一个 OpenAI 兼容的 LLM 端点与 API Key（DeepSeek / 通义 / 硅基流动 / 本地 Ollama 等均可）
+
+## 配置（填入你的 API Key）
+
+配置分层：`appsettings.json`（非机密默认值，提交）→ `appsettings.Local.json`（本地机密，gitignore，不提交）→ 环境变量（最高优先级）。密钥不写入源码、不进版本库。
+
+在要运行的项目目录下复制模板并填 Key：
+
+```powershell
+copy src\CodeReviewAgent.Web\appsettings.Local.json.example src\CodeReviewAgent.Web\appsettings.Local.json
+# 然后编辑该文件，把 "在此填入你的key" 改成真实 Key
+```
+
+每个可运行项目（Web / Mcp）各读取本目录下的 `appsettings.Local.json`；要运行哪个就在哪个目录放一份。也可用环境变量 `Llm__ApiKey` 覆盖。
+
+## 构建与运行
+
+```bash
+dotnet build                               # 还原并编译整个解决方案
+dotnet run --project src/CodeReviewAgent.Web   # 启动 Web 聊天界面
+dotnet test                                # 运行单元测试
+```
+
+> 注：当前为骨架，工具与 RAG（组员 B）落地前，端到端审查会在调用工具处抛出 NotImplementedException，属于预期内现象。

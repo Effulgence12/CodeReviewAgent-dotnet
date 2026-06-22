@@ -1,0 +1,11 @@
+# 构建产物
+bin/
+obj/
+
+# 密钥与本地配置（不要提交真实 Key）
+appsettings.Local.json
+**/appsettings.Local.json
+
+# IDE / 用户级
+.vs/
+*.user
