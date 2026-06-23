@@ -67,11 +67,17 @@ public sealed class ReviewOrchestrator
         var sw = Stopwatch.StartNew();
         if (_config.Rag.Enabled)
         {
-            await _knowledgeBase.InitializeAsync(ct); // 确保规范知识库已就绪
+            // 首次会读取语料、分块并逐批向量化，可能耗时数秒且期间无专家事件；
+            // 先给观察者一条提示，避免界面看起来卡住。
+            observer.OnThought("深度审查", "正在准备规范知识库（首次需向量化语料，请稍候）…");
+            await _knowledgeBase.InitializeAsync(ct); // 确保规范知识库已就绪（幂等，仅首次真正初始化）
         }
 
-        var goal = $"请审查目录「{fullPath}」中的 C# 代码。先列出文件，再针对关键文件读取并做静态分析，" +
-                   $"最后从你的专长视角给出 Markdown 审查意见。";
+        // 注意：不要把绝对路径塞进 goal —— 文件系统工具已沙箱到审查根目录，
+        // 路径末段（如 samples）会被模型误当成子目录而走弯路。明确「直接 list_files」即可。
+        var goal = "请审查当前审查根目录下的 C# 代码（文件系统工具已限定在该根目录内：" +
+                   "直接调用 list_files 列出文件，无需指定子目录；read_file / analyze_code 用相对路径）。" +
+                   "先列出文件，再针对关键文件读取并做静态分析，最后从你的专长视角给出 Markdown 审查意见。";
 
         // 阶段1：三位专家并行（体现异步深度；各自独立 ReAct 循环与工作记忆）。
         var tasks = Specialists.Select(s => RunSpecialistAsync(s.Role, s.Prompt(), fullPath, goal, observer, ct));

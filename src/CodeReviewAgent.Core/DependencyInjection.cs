@@ -20,6 +20,12 @@ public static class DependencyInjection
             .Bind(configuration);
 
         services.AddHttpClient();
+        // embedding 专用客户端：缩短超时，让慢网络下卡住的请求快速失败并由重试换新连接重试，
+        // 而不是干等默认的 100 秒。配合 EmbeddingService 的分批并行与瞬时错误重试。
+        services.AddHttpClient(nameof(EmbeddingService), client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
 
         // 引擎与编排（A 负责）。
         services.AddSingleton<KernelFactory>();
