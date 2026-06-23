@@ -46,18 +46,59 @@ public sealed class EmbeddingService : IEmbeddingService
             throw new InvalidOperationException("未配置 Embedding ApiKey。 ");
         }
 
+        // 部分端点（如 DashScope）限制单批文本条数（默认上限 10），超出会 400。
+        // 这里按 BatchSize 切分、分多次请求，再按全局顺序拼回为一个结果数组。
+        var batchSize = _embedding.BatchSize;
+        if (batchSize <= 0)
+        {
+            throw new InvalidOperationException("Embedding.BatchSize 必须大于 0。 ");
+        }
+
+        var ordered = new float[texts.Count][];
+        for (var offset = 0; offset < texts.Count; offset += batchSize)
+        {
+            var batch = texts.Skip(offset).Take(batchSize).ToArray();
+            var vectors = await EmbedBatchAsync(batch, ct);
+            for (var i = 0; i < vectors.Length; i++)
+            {
+                ordered[offset + i] = vectors[i];
+            }
+        }
+
+        var dimension = ordered[0].Length;
+        if (ordered.Any(vector => vector is null || vector.Length != dimension))
+        {
+            throw new InvalidDataException("Embedding 响应向量维度不一致。 ");
+        }
+        return ordered;
+    }
+
+    /// <summary>请求单批（条数已不超过端点上限）并按批内 index 排好序返回。</summary>
+    private async Task<float[][]> EmbedBatchAsync(IReadOnlyList<string> batch, CancellationToken ct)
+    {
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             $"{Endpoint.TrimEnd('/')}/embeddings");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ApiKey);
-        request.Content = JsonContent.Create(new EmbeddingRequest(_embedding.Model, texts));
+        request.Content = JsonContent.Create(new EmbeddingRequest(_embedding.Model, batch));
 
         var client = _httpClientFactory.CreateClient(nameof(EmbeddingService));
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         if (!response.IsSuccessStatusCode)
         {
+            // 把响应体附进异常，便于排错（如端点返回的参数/批量上限错误说明），失败读取不掩盖原错误。
+            string detail;
+            try
+            {
+                var body = await response.Content.ReadAsStringAsync(ct);
+                detail = body.Length <= 500 ? body : body[..500] + "…";
+            }
+            catch
+            {
+                detail = "(无法读取响应体)";
+            }
             throw new HttpRequestException(
-                $"Embedding 请求失败：HTTP {(int)response.StatusCode} ({response.ReasonPhrase})。 ");
+                $"Embedding 请求失败：HTTP {(int)response.StatusCode} ({response.ReasonPhrase})。响应：{detail}");
         }
 
         EmbeddingResponse payload;
@@ -71,15 +112,15 @@ public sealed class EmbeddingService : IEmbeddingService
             throw new InvalidDataException("Embedding 响应不是有效 JSON。 ", ex);
         }
 
-        if (payload.Data is null || payload.Data.Count != texts.Count)
+        if (payload.Data is null || payload.Data.Count != batch.Count)
         {
             throw new InvalidDataException("Embedding 响应数量与输入数量不一致。 ");
         }
 
-        var ordered = new float[texts.Count][];
+        var ordered = new float[batch.Count][];
         foreach (var item in payload.Data)
         {
-            if (item.Index < 0 || item.Index >= texts.Count || ordered[item.Index] is not null)
+            if (item.Index < 0 || item.Index >= batch.Count || ordered[item.Index] is not null)
             {
                 throw new InvalidDataException("Embedding 响应包含无效或重复的 index。 ");
             }
@@ -88,12 +129,6 @@ public sealed class EmbeddingService : IEmbeddingService
                 throw new InvalidDataException("Embedding 响应包含空向量。 ");
             }
             ordered[item.Index] = item.Embedding;
-        }
-
-        var dimension = ordered[0].Length;
-        if (ordered.Any(vector => vector is null || vector.Length != dimension))
-        {
-            throw new InvalidDataException("Embedding 响应向量维度不一致。 ");
         }
         return ordered;
     }

@@ -38,6 +38,11 @@ public sealed class EmbeddingOptions
     /// <summary>留空则回退到 <see cref="LlmOptions.ApiKey"/>。</summary>
     public string ApiKey { get; set; } = "";
     public string Model { get; set; } = "text-embedding-v3";
+    /// <summary>
+    /// 单次 /embeddings 请求的最大文本条数。部分端点（如 DashScope text-embedding-v3）
+    /// 限制单批 ≤ 10，超出会返回 400；超过此值时按批切分、分多次请求后按序拼回。
+    /// </summary>
+    public int BatchSize { get; set; } = 10;
 }
 
 /// <summary>RAG 检索配置。</summary>
