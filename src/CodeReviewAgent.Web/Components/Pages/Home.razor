@@ -1,32 +1,367 @@
 @page "/"
 @rendermode InteractiveServer
+@implements IDisposable
+@using CodeReviewAgent.Core.Agent
 @using CodeReviewAgent.Core.Llm
+@using CodeReviewAgent.Web.Models
+@using CodeReviewAgent.Web.Services
+@using Markdig
 @inject KernelFactory KernelFactory
+@inject ConversationalAgentFactory AgentFactory
+@inject ReviewWorkspaceService Workspaces
 
-<PageTitle>代码审查 Agent</PageTitle>
+<PageTitle>CodeReview Agent</PageTitle>
 
-<h1>代码审查 Agent</h1>
+<div class="workspace-shell">
+    <header class="workspace-header">
+        <div class="brand-lockup">
+            <span class="brand-mark">✦</span>
+            <div>
+                <h1>CodeReview Agent</h1>
+                <p>面向 C#/.NET 的可观测代码审查工作台</p>
+            </div>
+        </div>
+        <div class="model-status @(!KernelFactory.Llm.IsConfigured ? "status-warning" : string.Empty)">
+            <span class="status-dot"></span>
+            @if (KernelFactory.Llm.IsConfigured)
+            {
+                <span>@KernelFactory.Llm.ChatModel</span>
+            }
+            else
+            {
+                <span>未配置模型</span>
+            }
+        </div>
+    </header>
 
-@* 缺 Key 时显式提示（真实状态，绝不伪造）。 *@
-@if (!KernelFactory.Llm.IsConfigured)
-{
-    <p style="color:#a07070">
-        未检测到 LLM ApiKey。请在 Web 项目目录下复制 appsettings.Local.json.example 为
-        appsettings.Local.json 并填入 Llm:ApiKey，或设置环境变量 Llm__ApiKey 后重启。
-    </p>
+    @if (!KernelFactory.Llm.IsConfigured)
+    {
+        <div class="configuration-alert" role="alert">
+            未检测到 <code>Llm:ApiKey</code>。请复制 <code>appsettings.Local.json.example</code> 为
+            <code>appsettings.Local.json</code> 并填入 Key，或设置 <code>Llm__ApiKey</code> 后重启。
+            文件上传和目录选择仍可使用，但无法发起模型审查。
+        </div>
+    }
+
+    <main class="workspace-grid">
+        <section class="chat-column" aria-label="审查对话">
+            <div class="target-bar">
+                <div class="target-copy">
+                    <span class="eyebrow">当前审查目标</span>
+                    <strong title="@_reviewRoot">@_targetLabel</strong>
+                    <span class="target-path">@_reviewRoot</span>
+                </div>
+                <div class="permission-badge @(_allowWrites ? "permission-write" : "permission-read")">
+                    @(_allowWrites ? "允许修复写入" : "只读审查")
+                </div>
+            </div>
+
+            <div class="target-controls">
+                <label class="upload-button" title="可一次上传多个 .cs 文件">
+                    <span>上传 .cs 文件</span>
+                    <InputFile OnChange="HandleFilesSelectedAsync" multiple accept=".cs" disabled="@_isRunning" />
+                </label>
+                <div class="directory-picker">
+                    <input @bind="_directoryInput" @bind:event="oninput" disabled="@_isRunning"
+                           placeholder="本机或共享目录的绝对路径" aria-label="审查目录路径" />
+                    <button class="secondary-button" @onclick="UseDirectoryAsync" disabled="@(_isRunning || string.IsNullOrWhiteSpace(_directoryInput))">使用目录</button>
+                </div>
+                <label class="write-toggle">
+                    <input type="checkbox" checked="@_allowWrites" @onchange="ChangeWritePermissionAsync" disabled="@_isRunning" />
+                    <span>允许修改当前目录</span>
+                </label>
+            </div>
+            <p class="safety-note">外部目录默认只读。开启写入后，Agent 才会获得修复和编译验证工具；修改前会由工具创建 <code>.bak</code> 备份。</p>
+
+            <div class="quick-actions" aria-label="快捷操作">
+                <button class="quick-action" @onclick="RunDeepReviewAsync" disabled="@(!_canSend)">全面深度审查</button>
+                <button class="quick-action" @onclick="RunRemediationAsync" disabled="@(!_canSend || !_allowWrites)">按已确认问题修复</button>
+                @if (_isRunning)
+                {
+                    <button class="quick-action cancel-action" @onclick="CancelCurrentRun">停止本次任务</button>
+                }
+            </div>
+
+            <div class="conversation" aria-live="polite">
+                @if (_messages.Count == 0)
+                {
+                    <div class="empty-state">
+                        <span class="empty-icon">⌘</span>
+                        <h2>从一段 C# 代码开始</h2>
+                        <p>上传源文件，或选择一个目录，然后描述你希望 Agent 关注的问题。</p>
+                    </div>
+                }
+                else
+                {
+                    @foreach (var message in _messages)
+                    {
+                        <article class="message message-@message.Role @(message.IsError ? "message-error" : string.Empty)">
+                            <header>
+                                <span>@GetRoleLabel(message.Role)</span>
+                                <time>@message.CreatedAt.ToString("HH:mm:ss")</time>
+                            </header>
+                            @if (message.Role == "assistant")
+                            {
+                                <div class="markdown-body">@RenderMarkdown(message.Content)</div>
+                            }
+                            else
+                            {
+                                <p class="plain-message">@message.Content</p>
+                            }
+                        </article>
+                    }
+                }
+            </div>
+
+            <div class="composer">
+                <textarea @bind="_draft" @bind:event="oninput" disabled="@_isRunning"
+                          placeholder="例如：检查异常处理、并发安全和潜在性能问题…" aria-label="审查请求"></textarea>
+                <button class="send-button" @onclick="SendAsync" disabled="@(!_canSend)">
+                    @(_isRunning ? "审查中…" : "发送")
+                </button>
+            </div>
+        </section>
+
+        <aside class="trace-column" aria-label="推理轨迹">
+            <div class="trace-header">
+                <div>
+                    <span class="eyebrow">可观测性</span>
+                    <h2>推理轨迹</h2>
+                </div>
+                <span class="trace-count">@_traces.Count</span>
+            </div>
+            <p class="trace-intro">完整显示模型步骤、工具参数与工具返回值。多 Agent 深审会标明专家角色。</p>
+            <div class="trace-list">
+                @if (_traces.Count == 0)
+                {
+                    <div class="trace-empty">开始审查后，过程事件会实时出现于此。</div>
+                }
+                @foreach (var trace in _traces)
+                {
+                    <details class="trace-item trace-@trace.Kind" open="@ShouldOpen(trace)">
+                        <summary>
+                            <span class="trace-kind">@GetTraceLabel(trace.Kind)</span>
+                            <span class="trace-title">@trace.Agent · @trace.Title</span>
+                            <time>@trace.CreatedAt.ToString("HH:mm:ss")</time>
+                        </summary>
+                        @if (!string.IsNullOrWhiteSpace(trace.Content))
+                        {
+                            <pre>@trace.Content</pre>
+                        }
+                    </details>
+                }
+            </div>
+        </aside>
+    </main>
+</div>
+
+@code {
+    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .DisableHtml()
+        .Build();
+
+    private readonly List<ChatMessageViewModel> _messages = new();
+    private readonly List<AgentTraceEvent> _traces = new();
+    private ReActAgent? _agent;
+    private UiAgentObserver? _observer;
+    private CancellationTokenSource? _runCancellation;
+    private string _reviewRoot = string.Empty;
+    private string _targetLabel = "新的上传会话";
+    private string _sessionWorkspace = string.Empty;
+    private string _directoryInput = string.Empty;
+    private string _draft = string.Empty;
+    private bool _targetIsUpload = true;
+    private bool _allowWrites = true;
+    private bool _isRunning;
+
+    private bool _canSend => !_isRunning && KernelFactory.Llm.IsConfigured && !string.IsNullOrWhiteSpace(_reviewRoot);
+
+    protected override void OnInitialized()
+    {
+        _sessionWorkspace = Workspaces.CreateSessionWorkspace();
+        _reviewRoot = _sessionWorkspace;
+        CreateObserver();
+    }
+
+    private async Task HandleFilesSelectedAsync(InputFileChangeEventArgs eventArgs)
+    {
+        if (_isRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            var result = await Workspaces.SaveUploadsAsync(eventArgs.GetMultipleFiles(Workspaces.MaxFilesPerUpload));
+            var previousWorkspace = _targetIsUpload ? _sessionWorkspace : null;
+            _sessionWorkspace = result.WorkspacePath;
+            SetReviewTarget(result.WorkspacePath, $"上传会话 · {result.FileNames.Count} 个文件", isUpload: true, allowWrites: true);
+            AddSystemMessage($"已创建隔离工作区并上传：{string.Join("、", result.FileNames)}。可直接开始审查；此工作区允许显式修复。 ");
+            Workspaces.TryDeleteWorkspace(previousWorkspace);
+        }
+        catch (Exception ex)
+        {
+            AddSystemMessage($"上传失败：{ex.Message}", isError: true);
+        }
+    }
+
+    private Task UseDirectoryAsync()
+    {
+        if (_isRunning)
+        {
+            return Task.CompletedTask;
+        }
+
+        try
+        {
+            var directory = Workspaces.ResolveExistingDirectory(_directoryInput);
+            var previousWorkspace = _targetIsUpload ? _sessionWorkspace : null;
+            SetReviewTarget(directory, $"目录 · {Path.GetFileName(directory)}", isUpload: false, allowWrites: false);
+            AddSystemMessage("已切换到外部目录。为避免误修改，该目录当前为只读；如确需修复，请显式开启写入权限。 ");
+            Workspaces.TryDeleteWorkspace(previousWorkspace);
+        }
+        catch (Exception ex)
+        {
+            AddSystemMessage($"无法使用该目录：{ex.Message}", isError: true);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task ChangeWritePermissionAsync(ChangeEventArgs eventArgs)
+    {
+        if (_isRunning)
+        {
+            return Task.CompletedTask;
+        }
+
+        _allowWrites = eventArgs.Value is bool value && value;
+        RestartConversation($"已切换为{(_allowWrites ? "允许写入修复" : "只读审查")}模式；为使工具权限生效，已开始新的对话上下文。 ");
+        return Task.CompletedTask;
+    }
+
+    private Task RunDeepReviewAsync() => SendAsync("请对当前审查目录执行全面深度审查。按风格、安全、性能三个角度收集证据，并给出按严重程度排序的 Markdown 报告。 ");
+
+    private Task RunRemediationAsync() => SendAsync("请根据当前对话中已确认的问题执行修复，并对每项修改进行编译验证。先说明准备修改的文件与原因。 ");
+
+    private async Task SendAsync()
+    {
+        var userMessage = _draft.Trim();
+        if (string.IsNullOrWhiteSpace(userMessage))
+        {
+            return;
+        }
+
+        _draft = string.Empty;
+        await ExecutePromptAsync(userMessage);
+    }
+
+    private async Task SendAsync(string prompt) => await ExecutePromptAsync(prompt);
+
+    private async Task ExecutePromptAsync(string prompt)
+    {
+        if (!_canSend)
+        {
+            return;
+        }
+
+        _messages.Add(new ChatMessageViewModel("user", prompt, DateTimeOffset.Now));
+        _isRunning = true;
+        _runCancellation = new CancellationTokenSource();
+        try
+        {
+            _agent ??= AgentFactory.Create(_reviewRoot, _observer, _allowWrites);
+            var result = await _agent.RunAsync(prompt, _runCancellation.Token);
+            _messages.Add(new ChatMessageViewModel(
+                "assistant",
+                result.Answer,
+                DateTimeOffset.Now,
+                IsError: !result.Completed));
+        }
+        catch (OperationCanceledException)
+        {
+            AddSystemMessage("已停止本次任务。已有的工具结果仍保留在推理轨迹中。 ");
+        }
+        catch (Exception ex)
+        {
+            AddSystemMessage($"审查失败：{ex.Message}", isError: true);
+        }
+        finally
+        {
+            _runCancellation.Dispose();
+            _runCancellation = null;
+            _isRunning = false;
+        }
+    }
+
+    private void CancelCurrentRun() => _runCancellation?.Cancel();
+
+    private void SetReviewTarget(string root, string label, bool isUpload, bool allowWrites)
+    {
+        _reviewRoot = root;
+        _targetLabel = label;
+        _targetIsUpload = isUpload;
+        _allowWrites = allowWrites;
+        RestartConversation(null);
+    }
+
+    private void RestartConversation(string? note)
+    {
+        _agent = null;
+        _messages.Clear();
+        _traces.Clear();
+        if (!string.IsNullOrWhiteSpace(note))
+        {
+            AddSystemMessage(note);
+        }
+    }
+
+    private void CreateObserver()
+    {
+        _observer?.Dispose();
+        _observer = new UiAgentObserver(trace =>
+        {
+            _ = InvokeAsync(() =>
+            {
+                _traces.Add(trace);
+                StateHasChanged();
+            });
+        });
+    }
+
+    private void AddSystemMessage(string content, bool isError = false) =>
+        _messages.Add(new ChatMessageViewModel("system", content, DateTimeOffset.Now, isError));
+
+    private static string GetRoleLabel(string role) => role switch
+    {
+        "user" => "你",
+        "assistant" => "CodeReview Agent",
+        _ => "系统",
+    };
+
+    private static string GetTraceLabel(string kind) => kind switch
+    {
+        "step" => "STEP",
+        "thought" => "THOUGHT",
+        "action" => "ACTION",
+        "observation" => "OBSERVATION",
+        "final" => "FINAL",
+        _ => "TOKEN",
+    };
+
+    private static bool ShouldOpen(AgentTraceEvent trace) => trace.Kind is "action" or "observation";
+
+    private static MarkupString RenderMarkdown(string content) => new(Markdown.ToHtml(content, MarkdownPipeline));
+
+    public void Dispose()
+    {
+        _runCancellation?.Cancel();
+        _runCancellation?.Dispose();
+        _observer?.Dispose();
+        if (_targetIsUpload)
+        {
+            Workspaces.TryDeleteWorkspace(_sessionWorkspace);
+        }
+    }
 }
-else
-{
-    <p>当前模型：@KernelFactory.Llm.ChatModel</p>
-}
-
-@*
-    TODO(组员C): 实现聊天式交互界面。建议：
-    1. 注入 ConversationalAgentFactory，按会话 Create 一个对话 Agent（传入审查根目录与一个 IAgentObserver 适配器）。
-    2. 实现 IAgentObserver 适配器：把 OnStep/OnThought/OnAction/OnObservation/OnFinalAnswer 事件
-       通过 InvokeAsync(StateHasChanged) 实时渲染到「推理轨迹」面板。
-    3. 多轮对话：每次用户输入调用 agent.RunAsync(userMessage)，记忆在多轮间自动累积。
-    4. 代码提交入口：用 InputFile 上传 .cs 文件，或填写服务器目录路径作为审查根目录。
-    5. 回答用 Markdig 渲染为 Markdown。
-*@
-<p><em>聊天界面待组员 C 实现（见本文件 TODO 注释）。</em></p>

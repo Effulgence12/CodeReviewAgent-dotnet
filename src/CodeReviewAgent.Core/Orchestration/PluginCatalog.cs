@@ -45,13 +45,25 @@ public sealed class PluginCatalog
         KernelPluginFactory.CreateFromObject(new CompileCheckPlugin(root), "compile"),
     };
 
-    /// <summary>顶层对话 Agent 用的完整细粒度工具箱（不含粗粒度动作，后者单独挂载）。</summary>
-    public IReadOnlyList<KernelPlugin> BuildConversationTools(string root) => new List<KernelPlugin>
+    /// <summary>
+    /// 顶层对话 Agent 的细粒度工具箱（不含粗粒度动作，后者单独挂载）。
+    /// 对外部目录默认只加载只读工具；只有调用方得到明确写入授权时才加入修复工具。
+    /// </summary>
+    public IReadOnlyList<KernelPlugin> BuildConversationTools(string root, bool includeWriteTools = true)
     {
-        KernelPluginFactory.CreateFromObject(new FileSystemPlugin(root), "files"),
-        KernelPluginFactory.CreateFromObject(new RoslynAnalysisPlugin(root), "roslyn"),
-        KernelPluginFactory.CreateFromObject(new CodingStandardsPlugin(_knowledgeBase, _ragTopK), "standards"),
-        KernelPluginFactory.CreateFromObject(new FixPlugin(root), "fix"),
-        KernelPluginFactory.CreateFromObject(new CompileCheckPlugin(root), "compile"),
-    };
+        var tools = new List<KernelPlugin>
+        {
+            KernelPluginFactory.CreateFromObject(new FileSystemPlugin(root), "files"),
+            KernelPluginFactory.CreateFromObject(new RoslynAnalysisPlugin(root), "roslyn"),
+            KernelPluginFactory.CreateFromObject(new CodingStandardsPlugin(_knowledgeBase, _ragTopK), "standards"),
+        };
+
+        if (includeWriteTools)
+        {
+            tools.Add(KernelPluginFactory.CreateFromObject(new FixPlugin(root), "fix"));
+            tools.Add(KernelPluginFactory.CreateFromObject(new CompileCheckPlugin(root), "compile"));
+        }
+
+        return tools;
+    }
 }

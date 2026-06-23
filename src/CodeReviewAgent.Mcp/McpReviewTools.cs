@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using CodeReviewAgent.Core.Configuration;
 using CodeReviewAgent.Core.Orchestration;
 using CodeReviewAgent.Core.Tools;
 using ModelContextProtocol.Server;
@@ -22,27 +23,41 @@ public sealed class McpReviewTools
     [McpServerTool(Name = "analyze_csharp")]
     [Description("用 Roslyn 对一个 C# 文件做静态分析，返回客观发现（空 catch、超长方法、魔法数、async 缺 await、命名、TODO 等），含行号。不需要 LLM。")]
     public static string AnalyzeCSharp(
+        ReviewDirectoryPolicy directoryPolicy,
         [Description("要分析的 .cs 文件路径")] string path)
     {
-        if (!File.Exists(path))
+        try
         {
-            return $"文件不存在：{path}";
+            var fullPath = directoryPolicy.ResolveCSharpFile(path);
+            var code = File.ReadAllText(fullPath);
+            // 复用 Core 的纯分析核心（不需要 LLM）。
+            return RoslynAnalysisPlugin.Analyze(code);
         }
-        var code = File.ReadAllText(path);
-        // 复用 Core 的纯分析核心（组员 B 落地后生效）。
-        return RoslynAnalysisPlugin.Analyze(code);
+        catch (Exception ex) when (ex is ArgumentException or FileNotFoundException or UnauthorizedAccessException)
+        {
+            return $"无法分析文件：{ex.Message}";
+        }
     }
 
     [McpServerTool(Name = "review_directory")]
     [Description("对一个目录运行完整的多 Agent 代码审查（风格/安全/性能专家并行 + 主审汇总），返回 Markdown 审查报告。需要已配置 LLM Key。")]
     public static async Task<string> ReviewDirectory(
         ReviewOrchestrator orchestrator,
+        ReviewDirectoryPolicy directoryPolicy,
         [Description("要审查的目录路径")] string path,
         CancellationToken cancellationToken)
     {
-        // 复用 Core 的多 Agent 编排器（agents-as-tools：外层 MCP 工具触发内层多 Agent 工作流）。
-        var result = await orchestrator.RunDeepReviewAsync(path, observer: null, cancellationToken);
-        return $"# 审查报告：{result.TargetDirectory}\n\n用时 {result.Elapsed.TotalSeconds:F1}s，" +
-               $"工具调用 {result.TotalToolCalls} 次。\n\n{result.FinalReport}";
+        try
+        {
+            var fullPath = directoryPolicy.ResolveDirectory(path);
+            // MCP 当前只暴露只读的深度审查；写入始终需要在 Web 中显式授权。
+            var result = await orchestrator.RunDeepReviewAsync(fullPath, observer: null, cancellationToken);
+            return $"# 审查报告：{result.TargetDirectory}\n\n用时 {result.Elapsed.TotalSeconds:F1}s，" +
+                   $"工具调用 {result.TotalToolCalls} 次。\n\n{result.FinalReport}";
+        }
+        catch (Exception ex) when (ex is ArgumentException or DirectoryNotFoundException or UnauthorizedAccessException)
+        {
+            return $"无法审查目录：{ex.Message}";
+        }
     }
 }

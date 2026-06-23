@@ -26,6 +26,7 @@ public static class DependencyInjection
         services.AddSingleton<PluginCatalog>();
         services.AddSingleton<ReviewOrchestrator>();
         services.AddSingleton<ConversationalAgentFactory>();
+        services.AddSingleton<ReviewDirectoryPolicy>();
 
         // RAG（B 负责实现，这里按契约注册）。
         services.AddSingleton<IEmbeddingService, EmbeddingService>();

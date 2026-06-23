@@ -10,6 +10,21 @@ public sealed class AgentConfig
     public EmbeddingOptions Embedding { get; set; } = new();
     public RagOptions Rag { get; set; } = new();
     public ReActOptions Agent { get; set; } = new();
+    public ReviewAccessOptions ReviewAccess { get; set; } = new();
+}
+
+/// <summary>
+/// 审查目标目录的访问策略。Web 与 MCP 共用此配置，避免两个入口出现不同的
+/// 路径权限边界。生产环境建议关闭 <see cref="AllowArbitraryDirectories"/>，
+/// 并只列出经过授权的共享目录。
+/// </summary>
+public sealed class ReviewAccessOptions
+{
+    /// <summary>是否允许调用方指定任意存在的本机目录。开发环境可开启，生产环境应关闭。</summary>
+    public bool AllowArbitraryDirectories { get; set; }
+
+    /// <summary>允许审查的共享根目录；当不允许任意目录时，目标必须位于其中之一。</summary>
+    public List<string> SharedRoots { get; set; } = new();
 }
 
 /// <summary>大语言模型（OpenAI 兼容端点）配置。</summary>

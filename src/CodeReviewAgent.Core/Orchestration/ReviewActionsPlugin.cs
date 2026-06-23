@@ -46,3 +46,29 @@ public sealed class ReviewActionsPlugin
         return $"（修复完成，用时 {result.Elapsed.TotalSeconds:F1}s，工具调用 {result.ToolCalls} 次）\n\n{result.Report}";
     }
 }
+
+/// <summary>
+/// 只读会话使用的粗粒度动作。它刻意不暴露 run_remediation，确保模型在未获用户
+/// 写入授权时既看不到也无法调用任何会改动用户目录的工作流。
+/// </summary>
+public sealed class ReadOnlyReviewActionsPlugin
+{
+    private readonly ReviewOrchestrator _orchestrator;
+    private readonly string _root;
+    private readonly IAgentObserver _observer;
+
+    public ReadOnlyReviewActionsPlugin(ReviewOrchestrator orchestrator, string root, IAgentObserver? observer = null)
+    {
+        _orchestrator = orchestrator;
+        _root = root;
+        _observer = observer ?? NullAgentObserver.Instance;
+    }
+
+    [KernelFunction("run_deep_review")]
+    [Description("对整个审查目录发起多专家（风格/安全/性能）并行深度审查并汇总，返回 Markdown 报告。用户要求『全面审查/审一遍整个项目』时使用。")]
+    public async Task<string> RunDeepReviewAsync(CancellationToken ct = default)
+    {
+        var result = await _orchestrator.RunDeepReviewAsync(_root, _observer, ct);
+        return $"（深度审查完成，用时 {result.Elapsed.TotalSeconds:F1}s，工具调用 {result.TotalToolCalls} 次）\n\n{result.FinalReport}";
+    }
+}

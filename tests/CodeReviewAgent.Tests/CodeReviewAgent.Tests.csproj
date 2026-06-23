@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CodeReviewAgent.Core\CodeReviewAgent.Core.csproj" />
+    <ProjectReference Include="..\..\src\CodeReviewAgent.Mcp\CodeReviewAgent.Mcp.csproj" />
   </ItemGroup>
 
 </Project>

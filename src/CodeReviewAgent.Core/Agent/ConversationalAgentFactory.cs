@@ -45,16 +45,16 @@ public sealed class ConversationalAgentFactory
     /// </summary>
     /// <param name="reviewRoot">本会话的审查根目录（工具与深度审查都沙箱绑定到它）。</param>
     /// <param name="observer">推理过程观察者（Web 用于实时渲染轨迹）。</param>
-    public ReActAgent Create(string reviewRoot, IAgentObserver? observer = null)
+    public ReActAgent Create(string reviewRoot, IAgentObserver? observer = null, bool allowWrites = true)
     {
         var root = Path.GetFullPath(reviewRoot);
 
         // 完整工具箱 = 细粒度工具 + 粗粒度动作。
-        var tools = new List<KernelPlugin>(_plugins.BuildConversationTools(root))
-        {
-            KernelPluginFactory.CreateFromObject(
-                new ReviewActionsPlugin(_orchestrator, root, observer), "review"),
-        };
+        var tools = new List<KernelPlugin>(_plugins.BuildConversationTools(root, allowWrites));
+        object reviewActions = allowWrites
+            ? new ReviewActionsPlugin(_orchestrator, root, observer)
+            : new ReadOnlyReviewActionsPlugin(_orchestrator, root, observer);
+        tools.Add(KernelPluginFactory.CreateFromObject(reviewActions, "review"));
 
         var kernel = _kernelFactory.CreateKernel(tools);
         var memory = new ConversationMemory(ReviewPrompts.Conversational);

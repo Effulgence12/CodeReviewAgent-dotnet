@@ -1,5 +1,6 @@
 using CodeReviewAgent.Core;
 using CodeReviewAgent.Web.Components;
+using CodeReviewAgent.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,6 +17,8 @@ builder.Services.AddRazorComponents()
 
 // 注册代码审查 Agent 的全部核心服务（Core 提供）。
 builder.Services.AddCodeReviewAgent(builder.Configuration);
+builder.Services.Configure<ReviewWorkspaceOptions>(builder.Configuration.GetSection("ReviewWorkspace"));
+builder.Services.AddSingleton<ReviewWorkspaceService>();
 
 var app = builder.Build();
 
