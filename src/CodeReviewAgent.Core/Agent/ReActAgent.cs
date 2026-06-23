@@ -77,11 +77,12 @@ public sealed class ReActAgent
             _observer.OnStep(_name, step);
 
             // ===== 1. Thought：调用 LLM，获取下一步（可能含工具调用请求）=====
-            var (assistantMessage, functionCalls, content) =
+            var (assistantMessage, functionCalls, content, streamed) =
                 await GetNextStepAsync(settings, ct);
             _memory.Add(assistantMessage);
 
-            if (!string.IsNullOrWhiteSpace(content))
+            // 流式时思考内容已逐 token 通过 OnToken 上报，这里不再重复 OnThought（否则显示两遍）。
+            if (!streamed && !string.IsNullOrWhiteSpace(content))
             {
                 _observer.OnThought(_name, content);
             }
@@ -122,7 +123,7 @@ public sealed class ReActAgent
     /// 调用一次 LLM 取下一步。流式模式下边产出 token 边用
     /// <see cref="FunctionCallContentBuilder"/> 拼装工具调用；非流式则直接获取。
     /// </summary>
-    private async Task<(ChatMessageContent Message, IReadOnlyList<FunctionCallContent> Calls, string Content)>
+    private async Task<(ChatMessageContent Message, IReadOnlyList<FunctionCallContent> Calls, string Content, bool Streamed)>
         GetNextStepAsync(OpenAIPromptExecutionSettings settings, CancellationToken ct)
     {
         if (_options.Streaming)
@@ -141,11 +142,12 @@ public sealed class ReActAgent
 
         var response = await _chat.GetChatMessageContentAsync(_memory.History, settings, _kernel, ct);
         var directCalls = FunctionCallContent.GetFunctionCalls(response).ToList();
-        return (response, directCalls, response.Content ?? string.Empty);
+        // Streamed=false：内容未经 OnToken 流出，需由调用方 OnThought 一次性显示。
+        return (response, directCalls, response.Content ?? string.Empty, false);
     }
 
     /// <summary>流式获取下一步：逐 token 上报，同时增量拼装工具调用项。</summary>
-    private async Task<(ChatMessageContent Message, IReadOnlyList<FunctionCallContent> Calls, string Content)>
+    private async Task<(ChatMessageContent Message, IReadOnlyList<FunctionCallContent> Calls, string Content, bool Streamed)>
         StreamNextStepAsync(OpenAIPromptExecutionSettings settings, CancellationToken ct)
     {
         var contentBuilder = new StringBuilder();
@@ -175,7 +177,8 @@ public sealed class ReActAgent
         {
             message.Items.Add(call);
         }
-        return (message, calls, content);
+        // Streamed=true：内容已逐 token 上报，调用方不应再 OnThought。
+        return (message, calls, content, true);
     }
 
     /// <summary>把工具调用参数序列化为 JSON，供可观测性展示。</summary>

@@ -4,10 +4,5 @@
     "ApiKey": "在此填入你的key",
     "ChatModel": "填入模型名(可选: qwen3.7-max glm-5.2 qwen3.7-plus)",
     "Endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  },
-  "Embedding": {
-    "ApiKey": "",
-    "ChatModel": "text-embedding-v3",
-    "Endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1"
   }
 }

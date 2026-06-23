@@ -55,15 +55,35 @@ public sealed class EmbeddingService : IEmbeddingService
         }
 
         var ordered = new float[texts.Count][];
+        var offsets = new List<int>();
         for (var offset = 0; offset < texts.Count; offset += batchSize)
         {
-            var batch = texts.Skip(offset).Take(batchSize).ToArray();
-            var vectors = await EmbedBatchAsync(batch, ct);
-            for (var i = 0; i < vectors.Length; i++)
-            {
-                ordered[offset + i] = vectors[i];
-            }
+            offsets.Add(offset);
         }
+
+        // 批次并行（限并发）：慢网络下「多批顺序等待」是初始化耗时的主因，
+        // 限并发并行可把整体时间从「各批之和」降到接近「最慢批」。各批写入 ordered 的
+        // 不同区间，互不重叠，无需额外同步。
+        const int maxConcurrency = 4;
+        using var gate = new SemaphoreSlim(maxConcurrency);
+        var tasks = offsets.Select(async offset =>
+        {
+            await gate.WaitAsync(ct);
+            try
+            {
+                var batch = texts.Skip(offset).Take(batchSize).ToArray();
+                var vectors = await EmbedBatchWithRetryAsync(batch, ct);
+                for (var i = 0; i < vectors.Length; i++)
+                {
+                    ordered[offset + i] = vectors[i];
+                }
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+        await Task.WhenAll(tasks);
 
         var dimension = ordered[0].Length;
         if (ordered.Any(vector => vector is null || vector.Length != dimension))
@@ -72,6 +92,32 @@ public sealed class EmbeddingService : IEmbeddingService
         }
         return ordered;
     }
+
+    /// <summary>
+    /// 对单批请求做有限重试：embedding 是网络调用，TLS 连接中断（EOF）、连接重置、超时等
+    /// 瞬时错误（尤其连接池复用旧连接时常见）应重试，而非让整个深度审查直接失败。
+    /// </summary>
+    private async Task<float[][]> EmbedBatchWithRetryAsync(IReadOnlyList<string> batch, CancellationToken ct)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await EmbedBatchAsync(batch, ct);
+            }
+            catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex) && !ct.IsCancellationRequested)
+            {
+                // 线性退避（500ms、1000ms）后重试；参数错误等非瞬时错误不会进入这里，直接抛出。
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), ct);
+            }
+        }
+    }
+
+    /// <summary>判断是否为可重试的瞬时网络错误（连接中断/TLS EOF/读写超时等）。</summary>
+    private static bool IsTransient(Exception ex) =>
+        ex is HttpRequestException or IOException ||
+        (ex is TaskCanceledException && ex.InnerException is TimeoutException);
 
     /// <summary>请求单批（条数已不超过端点上限）并按批内 index 排好序返回。</summary>
     private async Task<float[][]> EmbedBatchAsync(IReadOnlyList<string> batch, CancellationToken ct)
