@@ -51,6 +51,8 @@ dotnet run --project src/CodeReviewAgent.Console -- samples
 dotnet run --project src/CodeReviewAgent.Mcp
 ```
 
+> **VSCode 集成终端启动 Console 注意**：在 VSCode 集成终端里运行命令行版时，中文输入可能乱码（ConPTY 伪终端的代码页限制）。先执行 `chcp 65001` 再 `dotnet run`，同一会话内即可正常输入中文；Windows 系统自带终端（conhost）无需此步。
+
 MCP 是 stdio 服务，直接运行后会等待客户端输入；用 Inspector 验证：
 
 ```bash

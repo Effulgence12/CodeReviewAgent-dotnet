@@ -9,3 +9,10 @@ appsettings.Local.json
 # IDE / 用户级
 .vs/
 *.user
+
+# 操作系统垃圾文件
+.DS_Store
+**/.DS_Store
+
+# Web 上传工作区（运行时按需创建的会话目录，非源码）
+src/CodeReviewAgent.Web/App_Data/
