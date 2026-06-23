@@ -35,4 +35,12 @@ app.UseAntiforgery();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
+app.MapGet("/api/workspaces/{token}/download", (string token, ReviewWorkspaceService workspaces) =>
+{
+    var archive = workspaces.CreateDownloadArchive(token);
+    return archive is null
+        ? Results.NotFound()
+        : Results.File(archive.Content, "application/zip", archive.FileName);
+});
+
 app.Run();

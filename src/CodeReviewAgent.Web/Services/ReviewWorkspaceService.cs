@@ -1,6 +1,8 @@
 using CodeReviewAgent.Core.Configuration;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.Extensions.Options;
+using System.Collections.Concurrent;
+using System.IO.Compression;
 
 namespace CodeReviewAgent.Web.Services;
 
@@ -21,6 +23,7 @@ public sealed class ReviewWorkspaceService
     private readonly string _uploadRoot;
     private readonly ReviewWorkspaceOptions _options;
     private readonly ReviewDirectoryPolicy _directoryPolicy;
+    private readonly ConcurrentDictionary<string, string> _downloadWorkspaces = new(StringComparer.Ordinal);
 
     public ReviewWorkspaceService(
         IHostEnvironment environment,
@@ -82,7 +85,9 @@ public sealed class ReviewWorkspaceService
                 savedNames.Add(Path.GetFileName(destination));
             }
 
-            return new UploadResult(workspace, savedNames);
+            var downloadToken = Guid.NewGuid().ToString("N");
+            _downloadWorkspaces[downloadToken] = workspace;
+            return new UploadResult(workspace, savedNames, downloadToken);
         }
         catch
         {
@@ -110,6 +115,11 @@ public sealed class ReviewWorkspaceService
             {
                 Directory.Delete(fullPath, recursive: true);
             }
+            foreach (var entry in _downloadWorkspaces.Where(entry =>
+                         string.Equals(entry.Value, fullPath, StringComparison.Ordinal)).ToArray())
+            {
+                _downloadWorkspaces.TryRemove(entry.Key, out _);
+            }
         }
         catch (IOException)
         {
@@ -133,6 +143,45 @@ public sealed class ReviewWorkspaceService
         }
         return candidate;
     }
+
+    /// <summary>用一次性的、不透明 token 打包上传会话当前的 .cs 文件，供用户下载修复结果。</summary>
+    public WorkspaceArchive? CreateDownloadArchive(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token) || !_downloadWorkspaces.TryGetValue(token, out var workspace))
+        {
+            return null;
+        }
+
+        var fullPath = Path.GetFullPath(workspace);
+        if (!fullPath.StartsWith(_uploadRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            !Directory.Exists(fullPath))
+        {
+            return null;
+        }
+
+        using var stream = new MemoryStream();
+        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var files = Directory.EnumerateFiles(fullPath, "*.cs", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+            });
+            foreach (var file in files)
+            {
+                var entry = archive.CreateEntry(Path.GetRelativePath(fullPath, file), CompressionLevel.Optimal);
+                using var entryStream = entry.Open();
+                using var input = File.OpenRead(file);
+                input.CopyTo(entryStream);
+            }
+        }
+
+        return new WorkspaceArchive(
+            stream.ToArray(),
+            $"code-review-result-{token[..8]}.zip");
+    }
 }
 
-public sealed record UploadResult(string WorkspacePath, IReadOnlyList<string> FileNames);
+public sealed record UploadResult(string WorkspacePath, IReadOnlyList<string> FileNames, string DownloadToken);
+
+public sealed record WorkspaceArchive(byte[] Content, string FileName);

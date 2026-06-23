@@ -3,6 +3,7 @@
 @implements IDisposable
 @using CodeReviewAgent.Core.Agent
 @using CodeReviewAgent.Core.Llm
+@using CodeReviewAgent.Core.Tools
 @using CodeReviewAgent.Web.Models
 @using CodeReviewAgent.Web.Services
 @using Markdig
@@ -57,8 +58,8 @@
             </div>
 
             <div class="target-controls">
-                <label class="upload-button" title="可一次上传多个 .cs 文件">
-                    <span>上传 .cs 文件</span>
+                <label class="upload-button" title="可一次上传多个 .cs 文件到隔离工作区；不会修改你的原始文件">
+                    <span>上传副本</span>
                     <InputFile OnChange="HandleFilesSelectedAsync" multiple accept=".cs" disabled="@_isRunning" />
                 </label>
                 <div class="directory-picker">
@@ -70,12 +71,16 @@
                     <input type="checkbox" checked="@_allowWrites" @onchange="ChangeWritePermissionAsync" disabled="@_isRunning" />
                     <span>允许修改当前目录</span>
                 </label>
+                @if (_targetIsUpload && !string.IsNullOrWhiteSpace(_downloadToken))
+                {
+                    <a class="download-action" href="@($"/api/workspaces/{_downloadToken}/download")">下载当前修复结果</a>
+                }
             </div>
-            <p class="safety-note">外部目录默认只读。开启写入后，Agent 才会获得修复和编译验证工具；修改前会由工具创建 <code>.bak</code> 备份。</p>
+            <p class="safety-note">上传仅创建隔离副本，不会回写原文件。外部目录默认只读；开启写入后，Agent 只会生成待确认 diff，确认后才写入并创建 <code>.bak</code> 备份。</p>
 
             <div class="quick-actions" aria-label="快捷操作">
                 <button class="quick-action" @onclick="RunDeepReviewAsync" disabled="@(!_canSend)">全面深度审查</button>
-                <button class="quick-action" @onclick="RunRemediationAsync" disabled="@(!_canSend || !_allowWrites)">按已确认问题修复</button>
+                <button class="quick-action" @onclick="RunRemediationAsync" disabled="@(!_canSend || !_allowWrites)">生成修复方案</button>
                 @if (_isRunning)
                 {
                     <button class="quick-action cancel-action" @onclick="CancelCurrentRun">停止本次任务</button>
@@ -112,6 +117,69 @@
                     }
                 }
             </div>
+
+            @if (_allowWrites && _fixSession is not null && _fixSession.PendingFixes.Count > 0)
+            {
+                <section class="fix-panel" aria-label="待确认修复">
+                    <div class="fix-panel-header">
+                        <div>
+                            <span class="eyebrow">待确认修改</span>
+                            <h2>检查 diff 后再写入</h2>
+                        </div>
+                        <span class="trace-count">@_fixSession.PendingFixes.Count</span>
+                    </div>
+                    @foreach (var fix in _fixSession.PendingFixes)
+                    {
+                        <article class="fix-preview">
+                            <div class="fix-preview-meta">
+                                <strong>@fix.Path</strong>
+                                <span>@fix.Issue</span>
+                            </div>
+                            <pre class="diff-preview">@fix.UnifiedDiff</pre>
+                            <div class="fix-preview-actions">
+                                <button class="confirm-fix" @onclick="() => ApplyFixAsync(fix.Id)">确认写入并编译验证</button>
+                                <button class="secondary-button" @onclick="() => DiscardFixAsync(fix.Id)">放弃此修改</button>
+                            </div>
+                        </article>
+                    }
+                </section>
+            }
+
+            @if (_appliedFixes.Count > 0)
+            {
+                <section class="applied-panel" aria-label="已应用修复">
+                    <div class="fix-panel-header">
+                        <div>
+                            <span class="eyebrow">已应用修复</span>
+                            <h2>备份与回滚</h2>
+                        </div>
+                    </div>
+                    @foreach (var applied in _appliedFixes)
+                    {
+                        <article class="applied-fix">
+                            <div>
+                                <strong>@applied.Path</strong>
+                                <span>备份：@applied.BackupPath</span>
+                                @if (_compileResults.TryGetValue(applied.Id, out var compileResult))
+                                {
+                                    <pre class="compile-result">@compileResult</pre>
+                                }
+                            </div>
+                            <div class="fix-preview-actions">
+                                <button class="secondary-button" @onclick="() => ViewBackupAsync(applied.Path)">查看 .bak</button>
+                                <button class="rollback-action" @onclick="() => RollbackFixAsync(applied.Path)">回滚此文件</button>
+                            </div>
+                            @if (_backupPreviews.TryGetValue(applied.Path, out var backupContent))
+                            {
+                                <details class="backup-preview" open>
+                                    <summary>.bak 原始内容</summary>
+                                    <pre>@backupContent</pre>
+                                </details>
+                            }
+                        </article>
+                    }
+                </section>
+            }
 
             <div class="composer">
                 <textarea @bind="_draft" @bind:event="oninput" disabled="@_isRunning"
@@ -165,15 +233,20 @@
     private readonly List<AgentTraceEvent> _traces = new();
     private ReActAgent? _agent;
     private UiAgentObserver? _observer;
+    private FixSession? _fixSession;
     private CancellationTokenSource? _runCancellation;
     private string _reviewRoot = string.Empty;
     private string _targetLabel = "新的上传会话";
     private string _sessionWorkspace = string.Empty;
     private string _directoryInput = string.Empty;
     private string _draft = string.Empty;
+    private string? _downloadToken;
     private bool _targetIsUpload = true;
     private bool _allowWrites = true;
     private bool _isRunning;
+    private readonly List<AppliedFix> _appliedFixes = new();
+    private readonly Dictionary<string, string> _compileResults = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _backupPreviews = new(StringComparer.Ordinal);
 
     private bool _canSend => !_isRunning && KernelFactory.Llm.IsConfigured && !string.IsNullOrWhiteSpace(_reviewRoot);
 
@@ -181,6 +254,7 @@
     {
         _sessionWorkspace = Workspaces.CreateSessionWorkspace();
         _reviewRoot = _sessionWorkspace;
+        _fixSession = new FixSession(_reviewRoot);
         CreateObserver();
     }
 
@@ -197,7 +271,8 @@
             var previousWorkspace = _targetIsUpload ? _sessionWorkspace : null;
             _sessionWorkspace = result.WorkspacePath;
             SetReviewTarget(result.WorkspacePath, $"上传会话 · {result.FileNames.Count} 个文件", isUpload: true, allowWrites: true);
-            AddSystemMessage($"已创建隔离工作区并上传：{string.Join("、", result.FileNames)}。可直接开始审查；此工作区允许显式修复。 ");
+            _downloadToken = result.DownloadToken;
+            AddSystemMessage($"已创建隔离工作区并上传副本：{string.Join("、", result.FileNames)}。修改只会作用于此副本；确认后的结果可下载。 ");
             Workspaces.TryDeleteWorkspace(previousWorkspace);
         }
         catch (Exception ex)
@@ -218,6 +293,7 @@
             var directory = Workspaces.ResolveExistingDirectory(_directoryInput);
             var previousWorkspace = _targetIsUpload ? _sessionWorkspace : null;
             SetReviewTarget(directory, $"目录 · {Path.GetFileName(directory)}", isUpload: false, allowWrites: false);
+            _downloadToken = null;
             AddSystemMessage("已切换到外部目录。为避免误修改，该目录当前为只读；如确需修复，请显式开启写入权限。 ");
             Workspaces.TryDeleteWorkspace(previousWorkspace);
         }
@@ -237,13 +313,14 @@
         }
 
         _allowWrites = eventArgs.Value is bool value && value;
+        _fixSession = new FixSession(_reviewRoot);
         RestartConversation($"已切换为{(_allowWrites ? "允许写入修复" : "只读审查")}模式；为使工具权限生效，已开始新的对话上下文。 ");
         return Task.CompletedTask;
     }
 
     private Task RunDeepReviewAsync() => SendAsync("请对当前审查目录执行全面深度审查。按风格、安全、性能三个角度收集证据，并给出按严重程度排序的 Markdown 报告。 ");
 
-    private Task RunRemediationAsync() => SendAsync("请根据当前对话中已确认的问题执行修复，并对每项修改进行编译验证。先说明准备修改的文件与原因。 ");
+    private Task RunRemediationAsync() => SendAsync("请根据当前对话中已确认的问题生成修复方案。对每项修改调用 propose_fix 生成完整代码和 diff；不要假设已经写入文件，等待用户在界面确认后再进行编译验证。 ");
 
     private async Task SendAsync()
     {
@@ -271,7 +348,7 @@
         _runCancellation = new CancellationTokenSource();
         try
         {
-            _agent ??= AgentFactory.Create(_reviewRoot, _observer, _allowWrites);
+            _agent ??= AgentFactory.Create(_reviewRoot, _observer, _allowWrites, _allowWrites ? _fixSession : null);
             var result = await _agent.RunAsync(prompt, _runCancellation.Token);
             _messages.Add(new ChatMessageViewModel(
                 "assistant",
@@ -303,6 +380,7 @@
         _targetLabel = label;
         _targetIsUpload = isUpload;
         _allowWrites = allowWrites;
+        _fixSession = new FixSession(root);
         RestartConversation(null);
     }
 
@@ -311,6 +389,9 @@
         _agent = null;
         _messages.Clear();
         _traces.Clear();
+        _appliedFixes.Clear();
+        _compileResults.Clear();
+        _backupPreviews.Clear();
         if (!string.IsNullOrWhiteSpace(note))
         {
             AddSystemMessage(note);
@@ -332,6 +413,73 @@
 
     private void AddSystemMessage(string content, bool isError = false) =>
         _messages.Add(new ChatMessageViewModel("system", content, DateTimeOffset.Now, isError));
+
+    private Task DiscardFixAsync(string fixId)
+    {
+        try
+        {
+            _fixSession?.Discard(fixId);
+            AddSystemMessage("已放弃该待确认修改。 ");
+        }
+        catch (Exception ex)
+        {
+            AddSystemMessage($"无法放弃修改：{ex.Message}", isError: true);
+        }
+        return Task.CompletedTask;
+    }
+
+    private Task ApplyFixAsync(string fixId)
+    {
+        try
+        {
+            var applied = _fixSession?.Apply(fixId)
+                ?? throw new InvalidOperationException("当前会话没有可确认的修复。 ");
+            var compileResult = new CompileCheckPlugin(_reviewRoot).CompileCheck(applied.Path);
+            _appliedFixes.Add(applied);
+            _compileResults[applied.Id] = compileResult;
+            AddSystemMessage($"已确认并写入 {applied.Path}；已创建 {applied.BackupPath}。编译验证结果已显示在下方。 ");
+        }
+        catch (Exception ex)
+        {
+            AddSystemMessage($"无法应用修复：{ex.Message}", isError: true);
+        }
+        return Task.CompletedTask;
+    }
+
+    private Task ViewBackupAsync(string path)
+    {
+        try
+        {
+            if (_fixSession is null)
+            {
+                throw new InvalidOperationException("当前会话没有修复备份。 ");
+            }
+            _backupPreviews[path] = _fixSession.ReadBackup(path);
+        }
+        catch (Exception ex)
+        {
+            AddSystemMessage($"无法读取 .bak：{ex.Message}", isError: true);
+        }
+        return Task.CompletedTask;
+    }
+
+    private Task RollbackFixAsync(string path)
+    {
+        try
+        {
+            if (_fixSession is null)
+            {
+                throw new InvalidOperationException("当前会话没有修复备份。 ");
+            }
+            var restored = _fixSession.Rollback(path);
+            AddSystemMessage($"已从 {restored.BackupPath} 回滚 {restored.Path}。 ");
+        }
+        catch (Exception ex)
+        {
+            AddSystemMessage($"回滚失败：{ex.Message}", isError: true);
+        }
+        return Task.CompletedTask;
+    }
 
     private static string GetRoleLabel(string role) => role switch
     {

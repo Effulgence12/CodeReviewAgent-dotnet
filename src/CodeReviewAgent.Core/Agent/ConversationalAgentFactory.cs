@@ -3,6 +3,7 @@ using CodeReviewAgent.Core.Configuration;
 using CodeReviewAgent.Core.Llm;
 using CodeReviewAgent.Core.Memory;
 using CodeReviewAgent.Core.Orchestration;
+using CodeReviewAgent.Core.Tools;
 using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel;
 
@@ -45,13 +46,18 @@ public sealed class ConversationalAgentFactory
     /// </summary>
     /// <param name="reviewRoot">本会话的审查根目录（工具与深度审查都沙箱绑定到它）。</param>
     /// <param name="observer">推理过程观察者（Web 用于实时渲染轨迹）。</param>
-    public ReActAgent Create(string reviewRoot, IAgentObserver? observer = null, bool allowWrites = true)
+    public ReActAgent Create(
+        string reviewRoot,
+        IAgentObserver? observer = null,
+        bool allowWrites = true,
+        FixSession? fixSession = null)
     {
         var root = Path.GetFullPath(reviewRoot);
 
         // 完整工具箱 = 细粒度工具 + 粗粒度动作。
-        var tools = new List<KernelPlugin>(_plugins.BuildConversationTools(root, allowWrites));
-        object reviewActions = allowWrites
+        var tools = new List<KernelPlugin>(_plugins.BuildConversationTools(root, allowWrites, fixSession));
+        // 交互 Web 会话使用暂存补丁，不能暴露会直接写文件的整包 remediation 动作。
+        object reviewActions = allowWrites && fixSession is null
             ? new ReviewActionsPlugin(_orchestrator, root, observer)
             : new ReadOnlyReviewActionsPlugin(_orchestrator, root, observer);
         tools.Add(KernelPluginFactory.CreateFromObject(reviewActions, "review"));

@@ -12,6 +12,7 @@ public sealed class FixPlugin
 {
     private readonly SandboxedPathResolver _paths;
     private readonly Action<string, string> _replaceFile;
+    private readonly FixSession? _fixSession;
 
     public FixPlugin(string root)
         : this(root, (temporaryPath, destinationPath) =>
@@ -25,8 +26,19 @@ public sealed class FixPlugin
         _replaceFile = replaceFile ?? throw new ArgumentNullException(nameof(replaceFile));
     }
 
+    /// <summary>
+    /// 创建用于交互 Web 会话的修复工具。此模式只生成待确认补丁，实际写入必须由
+    /// 宿主在用户确认后调用 <see cref="FixSession.Apply"/>。
+    /// </summary>
+    public FixPlugin(FixSession fixSession)
+    {
+        _fixSession = fixSession ?? throw new ArgumentNullException(nameof(fixSession));
+        _paths = new SandboxedPathResolver(_fixSession.Root);
+        _replaceFile = (temporaryPath, destinationPath) => File.Move(temporaryPath, destinationPath, overwrite: true);
+    }
+
     [KernelFunction("propose_fix")]
-    [Description("针对指定文件的某个问题，生成并写入修改（改写后的代码）。仅限审查目录内，写入前自动备份以便回滚。返回修改摘要。")]
+    [Description("针对指定文件的某个问题生成改写后的完整代码。在交互会话中只生成待用户确认的 unified diff，不会立即写文件；用户确认后系统才会应用修改并创建 .bak 备份。")]
     public string ProposeFix(
         [Description("相对审查根目录的 .cs 文件路径")] string path,
         [Description("要修复的问题描述（含大致位置）")] string issue,
@@ -39,6 +51,12 @@ public sealed class FixPlugin
         if (string.IsNullOrWhiteSpace(issue))
         {
             throw new ArgumentException("问题描述不能为空。", nameof(issue));
+        }
+
+        if (_fixSession is not null)
+        {
+            var pending = _fixSession.Stage(path, issue, newContent);
+            return $"已生成待确认修复（ID：{pending.Id}），尚未写入文件。问题：{pending.Issue}\n\n{pending.UnifiedDiff}";
         }
 
         var sourcePath = _paths.ResolveExistingCSharpFile(path);

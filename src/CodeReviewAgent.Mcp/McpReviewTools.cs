@@ -2,6 +2,7 @@ using System.ComponentModel;
 using CodeReviewAgent.Core.Configuration;
 using CodeReviewAgent.Core.Orchestration;
 using CodeReviewAgent.Core.Tools;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 namespace CodeReviewAgent.Mcp;
@@ -44,6 +45,7 @@ public sealed class McpReviewTools
     public static async Task<string> ReviewDirectory(
         ReviewOrchestrator orchestrator,
         ReviewDirectoryPolicy directoryPolicy,
+        ILogger<McpReviewTools> logger,
         [Description("要审查的目录路径")] string path,
         CancellationToken cancellationToken)
     {
@@ -55,9 +57,29 @@ public sealed class McpReviewTools
             return $"# 审查报告：{result.TargetDirectory}\n\n用时 {result.Elapsed.TotalSeconds:F1}s，" +
                    $"工具调用 {result.TotalToolCalls} 次。\n\n{result.FinalReport}";
         }
-        catch (Exception ex) when (ex is ArgumentException or DirectoryNotFoundException or UnauthorizedAccessException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return $"无法审查目录：{ex.Message}";
+            logger.LogInformation("MCP 深度审查已取消：{Path}", path);
+            return "深度审查已取消。";
+        }
+        catch (Exception ex)
+        {
+            // Inspector 只会把未捕获异常显示为通用的 “An error occurred invoking …”。
+            // 保留完整异常到 stderr，同时把可行动的诊断文本作为正常 MCP 工具结果返回。
+            logger.LogError(ex, "MCP 深度审查失败：{Path}", path);
+            return DescribeReviewFailure(ex);
         }
     }
+
+    private static string DescribeReviewFailure(Exception exception) => exception switch
+    {
+        ArgumentException or DirectoryNotFoundException or UnauthorizedAccessException =>
+            $"无法审查目录：{exception.Message}",
+        HttpRequestException =>
+            "深度审查失败：模型或 Embedding API 请求失败。请检查 Llm/Embedding 的 Endpoint、ApiKey、ChatModel/Model，以及网络连通性；完整响应已写入 MCP 服务的 stderr 日志。",
+        InvalidOperationException =>
+            $"深度审查失败：运行配置或知识库不可用。{exception.Message}",
+        _ =>
+            "深度审查失败：服务端发生未预期错误。请查看 MCP 服务 stderr 中的完整异常信息。",
+    };
 }

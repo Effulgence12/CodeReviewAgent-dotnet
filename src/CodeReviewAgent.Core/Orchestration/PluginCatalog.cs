@@ -49,7 +49,10 @@ public sealed class PluginCatalog
     /// 顶层对话 Agent 的细粒度工具箱（不含粗粒度动作，后者单独挂载）。
     /// 对外部目录默认只加载只读工具；只有调用方得到明确写入授权时才加入修复工具。
     /// </summary>
-    public IReadOnlyList<KernelPlugin> BuildConversationTools(string root, bool includeWriteTools = true)
+    public IReadOnlyList<KernelPlugin> BuildConversationTools(
+        string root,
+        bool includeWriteTools = true,
+        FixSession? fixSession = null)
     {
         var tools = new List<KernelPlugin>
         {
@@ -60,7 +63,13 @@ public sealed class PluginCatalog
 
         if (includeWriteTools)
         {
-            tools.Add(KernelPluginFactory.CreateFromObject(new FixPlugin(root), "fix"));
+            if (fixSession is not null && !string.Equals(
+                    Path.GetFullPath(root), Path.GetFullPath(fixSession.Root), StringComparison.Ordinal))
+            {
+                throw new ArgumentException("修复会话必须绑定到同一个审查根目录。", nameof(fixSession));
+            }
+            tools.Add(KernelPluginFactory.CreateFromObject(
+                fixSession is null ? new FixPlugin(root) : new FixPlugin(fixSession), "fix"));
             tools.Add(KernelPluginFactory.CreateFromObject(new CompileCheckPlugin(root), "compile"));
         }
 
