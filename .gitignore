@@ -2,6 +2,9 @@
 bin/
 obj/
 
+# 发布产物（dotnet publish 输出 / 打包目录，非源码）
+publish/
+
 # 密钥与本地配置（不要提交真实 Key）
 appsettings.Local.json
 **/appsettings.Local.json
